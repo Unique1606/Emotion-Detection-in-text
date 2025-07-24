@@ -1,7 +1,10 @@
-numpy
+streamlit
 pandas
+numpy
 seaborn
 neattext
 plotly
+altair
 scikit-learn
 joblib
+reportlab

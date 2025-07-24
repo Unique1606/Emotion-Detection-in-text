@@ -5,12 +5,22 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import joblib
-from track_utils import create_page_visited_table, add_page_visited_details, view_all_page_visited_details, add_prediction_details, view_all_prediction_details, create_emotionclf_table, IST  # Import IST from track_utils
+import io
+from reportlab.pdfgen import canvas
+from track_utils import (
+    create_page_visited_table,
+    add_page_visited_details,
+    view_all_page_visited_details,
+    add_prediction_details,
+    view_all_prediction_details,
+    create_emotionclf_table,
+    IST
+)
 
-# Load Model
+# Load model
 pipe_lr = joblib.load(open("./models/emotion_classifier_pipe_lr.pkl", "rb"))
 
-# Function
+# Prediction functions
 def predict_emotions(docx):
     results = pipe_lr.predict([docx])
     return results[0]
@@ -19,22 +29,47 @@ def get_prediction_proba(docx):
     results = pipe_lr.predict_proba([docx])
     return results
 
-emotions_emoji_dict = {"anger": "😠", "disgust": "🤮", "fear": "😨😱", "happy": "🤗", "joy": "😂", "neutral": "😐", "sad": "😔", "sadness": "😔", "shame": "😳", "surprise": "😮"}
+# Emoji dictionary
+emotions_emoji_dict = {
+    "anger": "😠", "disgust": "🪮", "fear": "😨😱", "happy": "🫷",
+    "joy": "😂", "neutral": "😐", "sad": "😔", "sadness": "😔",
+    "shame": "😳", "surprise": "😮"
+}
 
-# Main Application
+# PDF generator
+def generate_pdf(text, emotion, confidence):
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer)
+    c.setFont("Helvetica", 12)
+    c.drawString(100, 780, "Emotion Detection Report")
+    c.drawString(100, 750, f"Text: {text[:60]}{'...' if len(text) > 60 else ''}")
+    c.drawString(100, 720, f"Emotion: {emotion}")
+    c.drawString(100, 690, f"Confidence: {round(confidence * 100, 2)}%")
+    c.save()
+    buffer.seek(0)
+    return buffer
+
+# Main app
 def main():
-    st.title("Emotion Classifier App")
-    menu = ["Home", "Monitor", "About"]
+    st.set_page_config(page_title="Emotion Detector", page_icon="💬", layout="centered")
+
+    st.markdown("<h1 style='text-align: center; color: #6c63ff;'>💬 Emotion Detection in Text</h1>", unsafe_allow_html=True)
+    st.markdown("<h4 style='text-align: center; color: grey;'>Analyze emotions like joy, anger, sadness, and more.</h4>", unsafe_allow_html=True)
+    st.write("")
+
+    menu = ["Home", "File Analysis", "Monitor", "About"]
     choice = st.sidebar.selectbox("Menu", menu)
+
     create_page_visited_table()
     create_emotionclf_table()
+
     if choice == "Home":
         add_page_visited_details("Home", datetime.now(IST))
-        st.subheader("Emotion Detection in Text")
+        st.subheader("Try typing some text below:")
 
         with st.form(key='emotion_clf_form'):
-            raw_text = st.text_area("Type Here")
-            submit_text = st.form_submit_button(label='Submit')
+            raw_text = st.text_area("Your Text", height=150, placeholder="Enter your message here...")
+            submit_text = st.form_submit_button(label='Analyze Emotion')
 
         if submit_text:
             col1, col2 = st.columns(2)
@@ -49,24 +84,92 @@ def main():
                 st.write(raw_text)
 
                 st.success("Prediction")
-                emoji_icon = emotions_emoji_dict[prediction]
-                st.write("{}:{}".format(prediction, emoji_icon))
-                st.write("Confidence:{}".format(np.max(probability)))
+                emoji_icon = emotions_emoji_dict.get(prediction, "")
+                st.write(f"{prediction.capitalize()} {emoji_icon}")
+                st.markdown(f"**Confidence:** {round(np.max(probability)*100, 2)}%")
 
             with col2:
                 st.success("Prediction Probability")
                 proba_df = pd.DataFrame(probability, columns=pipe_lr.classes_)
                 proba_df_clean = proba_df.T.reset_index()
-                proba_df_clean.columns = ["emotions", "probability"]
+                proba_df_clean.columns = ["Emotions", "Probability"]
 
-                fig = alt.Chart(proba_df_clean).mark_bar().encode(x='emotions', y='probability', color='emotions')
+                fig = alt.Chart(proba_df_clean).mark_bar().encode(
+                    x=alt.X('Emotions', sort='-y'),
+                    y='Probability',
+                    color='Emotions'
+                )
                 st.altair_chart(fig, use_container_width=True)
+
+            # Export Section
+            st.markdown("---")
+            st.subheader("📤 Export Results")
+
+            # CSV Export
+            csv_data = pd.DataFrame({
+                "Text": [raw_text],
+                "Predicted Emotion": [prediction],
+                "Confidence": [round(np.max(probability)*100, 2)]
+            })
+            csv = csv_data.to_csv(index=False).encode('utf-8')
+            st.download_button("Download as CSV", data=csv, file_name="emotion_result.csv", mime='text/csv')
+
+            # PDF Export
+            pdf_buffer = generate_pdf(raw_text, prediction, np.max(probability))
+            st.download_button("Download as PDF", data=pdf_buffer, file_name="emotion_report.pdf", mime='application/pdf')
+
+    elif choice == "File Analysis":
+        add_page_visited_details("File Analysis", datetime.now(IST))
+        st.subheader("📁 Upload Text File for Emotion Analysis")
+        uploaded_file = st.file_uploader("Choose a .txt file", type=["txt"])
+
+        if uploaded_file is not None:
+            text_lines = uploaded_file.read().decode("utf-8").splitlines()
+            text_lines = [line.strip() for line in text_lines if line.strip()]
+
+            results = []
+            for line in text_lines:
+                emotion = predict_emotions(line)
+                proba = get_prediction_proba(line)
+                confidence = np.max(proba)
+                results.append({
+                    "Text": line,
+                    "Predicted Emotion": emotion,
+                    "Emoji": emotions_emoji_dict.get(emotion, ""),
+                    "Confidence": round(confidence * 100, 2)
+                })
+
+            df_result = pd.DataFrame(results)
+            st.dataframe(df_result)
+
+            # 📊 Emotion Count Chart (Fixed)
+            st.markdown("### 📊 Emotion Distribution")
+            emotion_counts = df_result["Predicted Emotion"].value_counts().reset_index()
+            emotion_counts.columns = ["Emotion", "Count"]
+
+            fig = px.bar(
+                emotion_counts,
+                x="Emotion", y="Count",
+                labels={"Emotion": "Emotion", "Count": "Count"},
+                title="Emotion Frequency",
+                color="Emotion"
+            )
+            st.plotly_chart(fig)
+
+            # 📥 CSV Download
+            csv = df_result.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Download Results as CSV",
+                data=csv,
+                file_name='emotion_analysis.csv',
+                mime='text/csv',
+            )
 
     elif choice == "Monitor":
         add_page_visited_details("Monitor", datetime.now(IST))
-        st.subheader("Monitor App")
+        st.subheader("Monitor Activity")
 
-        with st.expander("Page Metrics"):
+        with st.expander("📊 Page Metrics"):
             page_visited_details = pd.DataFrame(view_all_page_visited_details(), columns=['Page Name', 'Time of Visit'])
             st.dataframe(page_visited_details)
 
@@ -77,52 +180,61 @@ def main():
             p = px.pie(pg_count, values='Counts', names='Page Name')
             st.plotly_chart(p, use_container_width=True)
 
-        with st.expander('Emotion Classifier Metrics'):
+        with st.expander('📈 Emotion Classifier Logs'):
             df_emotions = pd.DataFrame(view_all_prediction_details(), columns=['Rawtext', 'Prediction', 'Probability', 'Time_of_Visit'])
             st.dataframe(df_emotions)
 
+            st.markdown("### 📊 Emotion Prediction Summary")
             prediction_count = df_emotions['Prediction'].value_counts().rename_axis('Prediction').reset_index(name='Counts')
-            pc = alt.Chart(prediction_count).mark_bar().encode(x='Prediction', y='Counts', color='Prediction')
-            st.altair_chart(pc, use_container_width=True)
+
+            bar_chart = alt.Chart(prediction_count).mark_bar().encode(
+                x=alt.X('Prediction', sort='-y'),
+                y='Counts',
+                color='Prediction'
+            ).properties(width=600)
+
+            st.altair_chart(bar_chart, use_container_width=True)
+
+            pie_chart = px.pie(
+                prediction_count,
+                values='Counts',
+                names='Prediction',
+                title='Emotion Distribution',
+                color_discrete_sequence=px.colors.qualitative.Set3
+            )
+            st.plotly_chart(pie_chart, use_container_width=True)
 
     else:
         add_page_visited_details("About", datetime.now(IST))
 
-        st.write("Welcome to the Emotion Detection in Text App! This application utilizes the power of natural language processing and machine learning to analyze and identify emotions in textual data.")
-
-        st.subheader("Our Mission")
-
-        st.write("At Emotion Detection in Text, our mission is to provide a user-friendly and efficient tool that helps individuals and organizations understand the emotional content hidden within text. We believe that emotions play a crucial role in communication, and by uncovering these emotions, we can gain valuable insights into the underlying sentiments and attitudes expressed in written text.")
-
-        st.subheader("How It Works")
-
-        st.write("When you input text into the app, our system processes it and applies advanced natural language processing algorithms to extract meaningful features from the text. These features are then fed into the trained model, which predicts the emotions associated with the input text. The app displays the detected emotions, along with a confidence score, providing you with valuable insights into the emotional content of your text.")
-
-        st.subheader("Key Features:")
-
-        st.markdown("##### 1. Real-time Emotion Detection")
-
-        st.write("Our app offers real-time emotion detection, allowing you to instantly analyze the emotions expressed in any given text. Whether you're analyzing customer feedback, social media posts, or any other form of text, our app provides you with immediate insights into the emotions underlying the text.")
-
-        st.markdown("##### 2. Confidence Score")
-
-        st.write("Alongside the detected emotions, our app provides a confidence score, indicating the model's certainty in its predictions. This score helps you gauge the reliability of the emotion detection results and make more informed decisions based on the analysis.")
-
-        st.markdown("##### 3. User-friendly Interface")
-
-        st.write("We've designed our app with simplicity and usability in mind. The intuitive user interface allows you to effortlessly input text, view the results, and interpret the emotions detected. Whether you're a seasoned data scientist or someone with limited technical expertise, our app is accessible to all.")
-
-        st.subheader("Applications")
-
+        st.subheader("📚 About This App")
         st.markdown("""
-          The Emotion Detection in Text App has a wide range of applications across various industries and domains. Some common use cases include:
-          - Social media sentiment analysis
-          - Customer feedback analysis
-          - Market research and consumer insights
-          - Brand monitoring and reputation management
-          - Content analysis and recommendation systems
-          """)
+        Welcome to the **Emotion Detection in Text App**!  
+        This app uses NLP and machine learning to detect emotional signals in text data.
+        """)
 
+        st.subheader("🚀 How It Works")
+        st.markdown("""
+        - You input your text.
+        - The system extracts features and applies a trained model.
+        - It predicts the most likely emotion and shows the confidence.
+        """)
+
+        st.subheader("🌟 Key Features")
+        st.markdown("""
+        - ✅ Real-time emotion detection  
+        - 📊 Confidence score for predictions  
+        - 🌟 Interactive visualizations  
+        - 📁 Monitoring dashboard  
+        """)
+
+        st.subheader("🌟 Use Cases")
+        st.markdown("""
+        - Social media monitoring  
+        - Customer feedback analysis  
+        - Chatbot sentiment detection  
+        - Market research  
+        """)
 
 if __name__ == '__main__':
     main()
